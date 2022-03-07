@@ -1,0 +1,278 @@
+---
+title: "Sentiment Analysis of Cricket Data"
+output: html_document
+---
+
+```{r}
+#load packages
+library(rtweet)
+library(twitteR)
+library(dplyr)
+library(tidyr)
+library(tidytext)
+library(textdata)
+library(ggplot2)
+library(purrr)
+library(lubridate)
+library(reshape2)
+library(wordcloud)
+```
+
+#### Extracting the tweets from Twitter:
+
+```{r}
+rm(list=ls())
+#Linking API into RStudio
+consumer_key <- 'Edp7nxu6yRI4s29XT7W3dq85c'
+consumer_secret <- 'PHVKemrQ1ejU6dt47HHvsi6RIwQgY2yUvsiSkRo1JNuJQb97Af'
+access_token <- '1441021732077199364-rt8INLe59PxiJUpCG3iM6EXfFccJ5l'
+access_secret <- 'ErbnKFmnf9Pvs01711KNxNjuhXzWjJG6DdJwu56M0GqCE'
+```
+
+```{r}
+create_token(consumer_key = consumer_key, consumer_secret = consumer_secret, access_token = access_token, access_secret = access_secret)
+
+#Pull Tweets
+cricket <- search_tweets('#INDvNZ', n = 500, include_rts = FALSE)
+View(cricket)
+```
+
+```{r}
+#top five entries with highest no of likes
+head(arrange(cricket,-cricket$favorite_count),5)
+
+#top five entries with lowest no of retweets
+head(arrange(cricket,cricket$retweet_count),5)
+```
+#### Analyzing the ratio of replies, retweets, and organic tweets can give more insight into the type of data and users we're dealing with:
+
+```{r}
+#To find the type of tweets
+#Removes retweets
+cricket_organic <- cricket[cricket$is_retweet==FALSE,] 
+
+#Removes replies
+cricket_organic <- subset(cricket_organic,is.na(cricket_organic$reply_to_status_id))
+cricket_organic <- subset(cricket_organic,is.na(cricket_organic$reply_to_screen_name))
+cricket_organic <- subset(cricket_organic,is.na(cricket_organic$reply_to_user_id))
+View(cricket_organic)
+
+#Keeping only the retweets
+cricket_retweets <- cricket[cricket$is_retweet==TRUE,]
+#View(cricket_retweets)
+
+#Keeping only the replies
+cricket_replies <- subset(cricket,!is.na(cricket$reply_to_screen_name))
+cricket_replies <- subset(cricket,!is.na(cricket$reply_to_status_id))
+cricket_replies <- subset(cricket,!is.na(cricket$reply_to_user_id))
+View(cricket_replies)
+
+#Creating a data frame
+data <- data.frame(category=c("Organic","Retweets","Replies"),
+                   count=c(7,0,0))
+str(data)
+
+#Adding columns
+data$fraction = data$count/sum(data$count)
+data$percentage = data$count/sum(data$count)*100
+data$ymax = cumsum(data$fraction)
+data$ymin = c(0,head(data$ymax,n=-1))
+Type_of_Tweet <- paste(data$category,data$percentage,"%")
+ggplot(data,aes(ymax=ymax,ymin=ymin,xmax=4,xmin=3,fill=Type_of_Tweet))+
+  geom_rect()+coord_polar(theta="y")+xlim(c(2,4)) 
+```
+
+#### Inference: The majority of tweets are of organic type which are 100%. The given data doesn't contain replies or retweets type.
+# 
+#### Visualizing the data when users have tweeted most on a 24-hour basis:
+
+```{r}
+#visualizing when individuals have tweeted the most
+cricket$hour <- hour(cricket$created_at)
+ggplot(cricket, aes(x = hour))+geom_density()
+```
+
+#### Inference: There is high density around 5 to 7, which implies that the users have mostly tweeted at around 5 to 7 am in the morning.
+# 
+#### Next we filter and take only the relevant features from the dataset, narrowing it down:
+
+```{r}
+tweets.cricket = cricket %>% 
+  select(screen_name, text)
+tweets.cricket
+View(tweets.cricket)
+
+head(tweets.cricket$text)
+```
+
+```{r}
+#Remove URL Links
+tweets.cricket$stripped_text1 <- gsub("http\\S+", "", tweets.cricket$text)
+
+tweets.cricket_stem <- tweets.cricket %>% 
+  select(stripped_text1) %>% 
+  unnest_tokens(word, stripped_text1)
+
+head(tweets.cricket_stem,10)
+```
+
+```{r}
+#remove stop words using anti-join 
+cleaned_tweets.cricket <- tweets.cricket_stem %>% 
+  anti_join(stop_words)
+head(cleaned_tweets.cricket,10)
+```
+
+```{r}
+head(tweets.cricket$text)
+```
+
+```{r}
+cleaned_tweets.cricket %>% 
+  count(word, sort = TRUE) %>%
+  top_n(10) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(x = word, y = n)) + geom_col() + xlab(NULL) + coord_flip() + theme_classic() + labs(x = "Unique words", y = "Count", title = "Unique word counts found in India v New Zealand tweets")
+```
+
+#### Inference: After preprocessing the data and cleaning it, the given are the top 10 words used in tweets (which also include the hashtags).
+
+```{r}
+get_sentiments("bing") %>%
+  filter(sentiment == "positive")
+get_sentiments("bing") %>%
+  filter(sentiment == "negative")
+#the AFINN lexicon model scores the words in a range from -5 to 5
+get_sentiments("afinn") %>%
+  filter(value == "3")
+get_sentiments("afinn") %>%
+  filter(value == "5")
+get_sentiments("afinn") %>%
+  filter(value == "-3")
+```
+
+
+```{r}
+#use the "bing" lexicon and implement filter() over words that correspond to postive sentiment
+positive_senti <- get_sentiments("bing") %>%
+  filter(sentiment == "positive")
+cleaned_tweets.cricket %>%
+  semi_join(positive_senti) %>%
+  count(word, sort = TRUE)
+```
+
+
+```{r}
+#Most common positive and negative words
+bing_cricket = cleaned_tweets.cricket %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+bing_cricket
+bing_cricket %>%
+  filter(n >0 ) %>%
+  mutate(n = ifelse(sentiment == "negative", -n, n)) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment))+
+  geom_col() +
+  coord_flip() 
+```
+
+#### Inference: After applying the lexicons on the tweets, and finding the positive and negative words in the tweets, the given figure displays the most positive and negative words.
+
+```{r}
+bing_cricket %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) + geom_col(show.legend = FALSE) + facet_wrap(~sentiment, scales = "free_y") + labs(title = "Tweets containing #INDvNZ", y = "Contributing to sentiment", x = NULL) + coord_flip() + theme_bw()
+```
+
+#### Inference: The given plot shows all the top positive and negative words used in the tweets.
+
+```{r}
+par(mar= rep(0,4))
+bing_cricket %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("red", "dark green"),
+                   max.words = 100,scale = c(1, 1))
+```
+
+#### Inference: Using the wordcloud library, a comparison cloud showing all the positive and negative words is displayed here.
+# 
+#### Applying sentiment analysis on the tweets, and splitting on whether the score of the tweet is zero or a non-zero value:
+
+```{r}
+sentiment_bing = function(twt){
+  #Step 1; perform basic cleaning on the tweet
+  twt_tbl = tibble(text = twt) %>%
+    mutate(
+      #Remove http elements
+      stripped_text = gsub("http\\S+","",text)
+    ) %>%
+    unnest_tokens(word,stripped_text) %>%
+    anti_join(stop_words) %>% #Remove stop words
+    inner_join(get_sentiments("bing")) %>% #Merge with bing sentiment
+    count(word, sentiment, sort = TRUE) %>%
+    ungroup() %>%
+    ##Create a column "score", that assigns a -1 to all negative words, and +1 to all positive words.
+    mutate(
+      score = case_when(
+        sentiment == 'negative'~n*(-1),
+        sentiment == 'positive'~n*1)
+    )
+  ##Calculate total score
+  sent.score = case_when(
+    nrow(twt_tbl) == 0~0, #if there are no words, then the score is 0
+    nrow(twt_tbl) > 0~sum(twt_tbl$score) #otherwise, sum the positives and negatives
+  )
+  ##This is to keep track of which tweets containted no words at all from the bing list
+  zero.type = case_when(
+    nrow(twt_tbl) == 0~"Type 1", #Type 1: no words at all, zero = no
+    nrow(twt_tbl) > 0~"Type 2" #Type 2: zero means sum of words = 0
+  )
+  list(score = sent.score, type = zero.type, twt_tbl = twt_tbl)
+}
+```
+
+```{r}
+#Apply function
+#The lapply function returns a list of all the sentiments scores, types, and tables of the tweets
+cricket_sent = lapply(cricket$text,function(x){sentiment_bing(x)})
+cricket_sent
+
+cricket_sentiment = bind_rows(
+  tibble(
+    cricket = '#INDvNZ',
+    score = unlist(map(cricket_sent,'score')),
+    type = unlist(map(cricket_sent,'type'))
+  )
+)
+cricket_sentiment
+View(cricket_sentiment)
+```
+
+
+```{r}
+ggplot(cricket_sentiment,aes(x = score, fill = cricket)) + geom_histogram(bins = 15, alpha = 0.6) + facet_grid(~cricket) + ggtitle("Distribution of Sentiment scores of the tweets") + theme_bw()
+```
+
+#### Inference: This is a histogram showing the distribution of different sentiment scores for all the tweets. We can see that neutral tweets with sentiment score of 0 are more frequent, then comes positive tweets with score>0 and negative tweets are the least frequent with score<0.
+
+```{r}
+#Barplot of sentiment type
+neutral <- length(which(cricket_sentiment$score == 0))
+positive <- length(which(cricket_sentiment$score > 0))
+negative <- length(which(cricket_sentiment$score < 0))
+Sentiment <- c("Positive","Neutral","Negative")
+Count <- c(positive,neutral,negative)
+output <- data.frame(Sentiment,Count)
+output$Sentiment<-factor(output$Sentiment,levels=Sentiment)
+ggplot(output, aes(x=Sentiment,y=Count))+
+  geom_bar(stat = "identity", aes(fill = Sentiment))+
+  ggtitle("Barplot of Sentiment type of 500 tweets")
+```
+
+#### Inference: Here is a bar plot showing the number of tweets that are positive, negative, and neutral.
